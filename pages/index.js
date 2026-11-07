@@ -127,14 +127,21 @@ export default function Home() {
         return;
       }
 
+      if (videoElement.readyState < 2 || !videoElement.videoWidth || !videoElement.videoHeight) {
+        rafRef.current = requestAnimationFrame(detect);
+        return;
+      }
+
       const ctx = canvas.getContext("2d");
-      canvas.width = videoElement.videoWidth || 640;
-      canvas.height = videoElement.videoHeight || 480;
+      if (canvas.width !== videoElement.videoWidth || canvas.height !== videoElement.videoHeight) {
+        canvas.width = videoElement.videoWidth;
+        canvas.height = videoElement.videoHeight;
+      }
 
       // Draw camera onto single canvas
       ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
 
-      const hands = await netRef.current.estimateHands(videoElement);
+      const hands = await netRef.current.estimateHands(canvas);
       if (hands.length > 0) {
         drawHand(hands[0].landmarks, ctx);
 
