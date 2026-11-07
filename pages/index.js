@@ -144,9 +144,9 @@ export default function Home() {
           let label = "-";
           let conf = 0;
           if (matches && matches.length > 0) {
-            matches.sort((a, b) => b.confidence - a.confidence);
-            label = matches[0].name;
-            conf = matches[0].confidence;
+            matches.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+            label = matches[0].name || "-";
+            conf = matches[0].confidence || 0;
           }
           setDetected(`${label} (${conf.toFixed(1)})`);
 
