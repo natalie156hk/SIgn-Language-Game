@@ -10,8 +10,8 @@
   },
   "dependencies": {
     "@tensorflow-models/handpose": "^0.0.7",
-    "@tensorflow/tfjs": "^2.8.6",
-    "@tensorflow/tfjs-backend-webgl": "^2.8.6",
+    "@tensorflow/tfjs": "^3.21.0",
+    "@tensorflow/tfjs-backend-webgl": "^3.21.0",
     "fingerpose": "^0.1.0",
     "next": "14.2.35",
     "react": "^18",
