@@ -1,30 +1,27 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import Webcam from "react-webcam";
-import { GestureEstimator, Gestures } from "fingerpose";
-import {
-  aSign, bSign, cSign, dSign, eSign, fSign, gSign,
-  iSign, lSign, oSign, uSign, vSign, wSign, ySign,
-} from "../lib/handsigns";
 
-const TARGET_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "I", "L", "O", "U", "V", "W", "Y"];
 const WORDS = [
   "BAY", "COW", "BOY", "OWL", "CAB", "FLY", "KEY", "WAX", "DOG",
   "CUP", "MAP", "LIP", "FOX", "YAM", "DAD", "BED", "VAN", "WIG"
 ];
 
 const GAME_SECONDS = 90;
-const CONF_THRESHOLD = 6.5;
+const CONF_THRESHOLD = 0.6;
 const STABLE_MS = 600;
 const COOLDOWN_MS = 500;
 const DETECTION_INTERVAL_MS = 100;
 const HAND_LANDMARKER_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 const MEDIAPIPE_WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const CLASSIFIER_URL = "/models/asl_landmark_mlp.onnx";
+const CLASS_LABELS_URL = "/models/mlp_classes.json";
 
 export default function Home() {
   const webcamRef = useRef(null);
   const canvasRef = useRef(null);
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [gameRunning, setGameRunning] = useState(false);
   const [targetLetter, setTargetLetter] = useState("-");
   const [currentWord, setCurrentWord] = useState("");
@@ -36,7 +33,11 @@ export default function Home() {
   const [banner, setBanner] = useState("");
 
   const handLandmarkerRef = useRef(null);
-  const estimatorRef = useRef(null);
+  const ortRuntimeRef = useRef(null);
+  const classifierRef = useRef(null);
+  const classifierInputRef = useRef(null);
+  const classifierOutputRef = useRef(null);
+  const classLabelsRef = useRef(null);
   const latestLandmarksRef = useRef(null);
   const lastInferenceAtRef = useRef(0);
   const lastVideoTimeRef = useRef(-1);
@@ -64,7 +65,7 @@ export default function Home() {
   }, []);
 
   const startGame = useCallback(() => {
-    if (loading) return;
+    if (loading || !classifierRef.current) return;
     setScore(0);
     scoreRef.current = 0;
     setLettersDone(0);
@@ -107,24 +108,42 @@ export default function Home() {
     let cancelled = false;
 
     async function init() {
-      const { FilesetResolver, HandLandmarker } = await import("@mediapipe/tasks-vision");
-      const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_URL);
-      const handLandmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: HAND_LANDMARKER_URL },
-        runningMode: "VIDEO",
-        numHands: 1,
-        minHandDetectionConfidence: 0.5,
-        minHandPresenceConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-      if (cancelled) return;
+      try {
+        const { FilesetResolver, HandLandmarker } = await import("@mediapipe/tasks-vision");
+        const ort = await import("onnxruntime-web");
+        const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_URL);
+        const handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: HAND_LANDMARKER_URL },
+          runningMode: "VIDEO",
+          numHands: 1,
+          minHandDetectionConfidence: 0.5,
+          minHandPresenceConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
+        const labelsResponse = await fetch(CLASS_LABELS_URL);
+        if (!labelsResponse.ok) throw new Error(`Could not load ASL labels (${labelsResponse.status})`);
+        const labels = await labelsResponse.json();
+        const classifier = await ort.InferenceSession.create(CLASSIFIER_URL, {
+          executionProviders: ["wasm"],
+        });
+        if (cancelled) {
+          handLandmarker.close();
+          await classifier.release();
+          return;
+        }
 
-      const gestures = [Gestures.ThumbsUpGesture, aSign, bSign, cSign, dSign, eSign, fSign, gSign, iSign, lSign, oSign, uSign, vSign, wSign, ySign];
-      const estimator = new GestureEstimator(gestures);
-
-      handLandmarkerRef.current = handLandmarker;
-      estimatorRef.current = estimator;
-      setLoading(false);
+        handLandmarkerRef.current = handLandmarker;
+        ortRuntimeRef.current = ort;
+        classifierRef.current = classifier;
+        classifierInputRef.current = classifier.inputNames[0];
+        classifierOutputRef.current = classifier.outputNames[0];
+        classLabelsRef.current = labels;
+        setLoading(false);
+      } catch (error) {
+        console.error("Model initialization failed:", error);
+        setLoadError(error.message || "Could not load the recognition models.");
+        setLoading(false);
+      }
     }
 
     init();
@@ -140,18 +159,46 @@ export default function Home() {
     let cancelled = false;
 
     function processPrediction(landmarks) {
-      if (!gameRunning || !estimatorRef.current) return;
+      if (!gameRunning || !classifierRef.current || !ortRuntimeRef.current) return;
+
+      const wrist = landmarks[0];
+      const centered = landmarks.map(({ x, y, z }) => [x - wrist.x, y - wrist.y, z - wrist.z]);
+      const middleMcp = centered[9];
+      const scale = Math.hypot(middleMcp[0], middleMcp[1], middleMcp[2]);
+      if (!Number.isFinite(scale) || scale < 1e-6) return;
+
+      const features = new Float32Array(63);
+      centered.forEach((point, index) => {
+        features[index * 3] = point[0] / scale;
+        features[index * 3 + 1] = point[1] / scale;
+        features[index * 3 + 2] = point[2] / scale;
+      });
+      const tensor = new ortRuntimeRef.current.Tensor("float32", features, [1, 63]);
 
       const now = performance.now();
-      estimatorRef.current.estimate(landmarks, 7).then((estimate) => {
-        const matches = estimate.gestures || [];
-        matches.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
-        const label = matches[0]?.name || "-";
-        const conf = matches[0]?.confidence || 0;
-        setDetected(`${label} (${conf.toFixed(1)})`);
+      classifierRef.current.run({ [classifierInputRef.current]: tensor }).then((outputs) => {
+        const logits = outputs[classifierOutputRef.current]?.data;
+        const labels = classLabelsRef.current;
+        if (!logits || !labels || logits.length !== labels.length) {
+          throw new Error("ASL classifier output does not match its label map.");
+        }
+
+        let bestIndex = 0;
+        let maxLogit = logits[0];
+        for (let i = 1; i < logits.length; i++) {
+          if (logits[i] > maxLogit) {
+            maxLogit = logits[i];
+            bestIndex = i;
+          }
+        }
+        let expTotal = 0;
+        for (let i = 0; i < logits.length; i++) expTotal += Math.exp(logits[i] - maxLogit);
+        const label = labels[bestIndex];
+        const confidence = 1 / expTotal;
+        setDetected(`${label} (${confidence.toFixed(2)})`);
 
         const expected = wordRef.current[indexRef.current];
-        if (label === expected && conf >= CONF_THRESHOLD) {
+        if (label === expected && confidence >= CONF_THRESHOLD) {
           if (label !== lastLabelRef.current) {
             lastLabelRef.current = label;
             stableStartRef.current = now;
@@ -182,7 +229,8 @@ export default function Home() {
           stableStartRef.current = 0;
         }
       }).catch((error) => {
-        console.error("Gesture estimation failed:", error);
+        console.error("ASL classification failed:", error);
+        setDetected(`Classifier error: ${(error.message || String(error)).slice(0, 48)}`);
       });
     }
 
@@ -202,16 +250,17 @@ export default function Home() {
           return;
         }
 
-        const landmarks = normalizedHand.map(({ x, y, z }) => [
+        const pixelLandmarks = normalizedHand.map(({ x, y, z }) => [
           x * videoElement.videoWidth,
           y * videoElement.videoHeight,
           z * videoElement.videoWidth,
         ]);
-        latestLandmarksRef.current = landmarks;
-        processPrediction(landmarks);
+        latestLandmarksRef.current = pixelLandmarks;
+        processPrediction(normalizedHand);
       } catch (error) {
         console.error("Hand detection failed:", error);
-        if (gameRunning) setDetected("Retrying tracker");
+        latestLandmarksRef.current = null;
+        if (gameRunning) setDetected(`Tracker error: ${(error.message || String(error)).slice(0, 48)}`);
       }
     }
 
@@ -342,6 +391,7 @@ export default function Home() {
 
             {banner && <div className="feedback-banner" role="status">{banner}</div>}
             {loading && <div className="camera-loading" role="status">Loading hand detector…</div>}
+            {loadError && <div className="camera-loading" role="alert">Model loading failed: {loadError}</div>}
           </div>
         </section>
 
@@ -352,7 +402,7 @@ export default function Home() {
             <div className="detected-note">Keep your full hand in the light-green guide.</div>
           </section>
           <div className="control-row">
-            <button onClick={startGame} disabled={loading} className="control-button">
+            <button onClick={startGame} disabled={loading || Boolean(loadError)} className="control-button">
               {gameRunning ? "Restart game" : "Start game"}
             </button>
             <button onClick={resetGame} className="control-button secondary">Reset</button>

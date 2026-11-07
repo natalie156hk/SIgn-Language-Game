@@ -1,0 +1,16 @@
+ASL Landmark MLP
+
+Model: mlp_asl.onnx
+Author: Doruk Dogular (nocontextdoruk)
+Source: https://huggingface.co/nocontextdoruk/asl-landmark-mlp
+License: Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)
+License text: https://creativecommons.org/licenses/by-nc/4.0/legalcode
+
+This model is used for a non-commercial educational game. Changes were made to its runtime integration and preprocessing.
+
+The model was trained using the ASL-HG dataset. Dataset credit:
+Pranto et al., ASL-HG: American Sign Language Hand Gesture Image Dataset (2026)
+https://data.mendeley.com/datasets/j4y5w2c8w9/1
+DOI: 10.17632/j4y5w2c8w9.1
+
+Model card reports validation results on a held-out portion of its dataset; those results do not guarantee accuracy with live school webcams.
