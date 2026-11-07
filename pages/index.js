@@ -131,6 +131,7 @@ export default function Home() {
       canvas.width = videoElement.videoWidth || 640;
       canvas.height = videoElement.videoHeight || 480;
 
+      // Draw camera onto single canvas
       ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
 
       const hands = await netRef.current.estimateHands(videoElement);
@@ -183,6 +184,12 @@ export default function Home() {
         }
       }
 
+      // Draw light green guide box in center
+      const box = Math.min(canvas.width, canvas.height) * 0.55;
+      ctx.strokeStyle = "rgba(144,238,144,0.9)";
+      ctx.lineWidth = 4;
+      ctx.strokeRect((canvas.width - box) / 2, (canvas.height - box) / 2, box, box);
+
       rafRef.current = requestAnimationFrame(detect);
     }
 
@@ -229,7 +236,7 @@ export default function Home() {
       </header>
 
       <main className="relative w-[640px] max-w-[96vw] aspect-[4/3] rounded-2xl overflow-hidden shadow-xl bg-black my-3">
-        <Webcam ref={webcamRef} className="absolute inset-0 w-full h-full" mirrored={false} audio={false} />
+        <Webcam ref={webcamRef} className="hidden" mirrored={false} audio={false} videoConstraints={{ width: 640, height: 480 }} />
         <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
 
         <div className="absolute top-3 right-3 bg-white/95 rounded-2xl p-4 text-center shadow-lg min-w-[110px]">
