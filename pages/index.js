@@ -1,6 +1,4 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
-import * as tf from "@tensorflow/tfjs";
-import * as handpose from "@tensorflow-models/handpose";
 import Webcam from "react-webcam";
 import { GestureEstimator, Gestures } from "fingerpose";
 import {
@@ -18,9 +16,9 @@ const GAME_SECONDS = 90;
 const CONF_THRESHOLD = 6.5;
 const STABLE_MS = 600;
 const COOLDOWN_MS = 500;
-const DETECTION_INTERVAL_MS = 250;
-const DETECTION_WIDTH = 320;
-const DETECTION_HEIGHT = 240;
+const DETECTION_INTERVAL_MS = 100;
+const HAND_LANDMARKER_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+const MEDIAPIPE_WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 
 export default function Home() {
   const webcamRef = useRef(null);
@@ -37,11 +35,9 @@ export default function Home() {
   const [lettersDone, setLettersDone] = useState(0);
   const [banner, setBanner] = useState("");
 
-  const netRef = useRef(null);
+  const handLandmarkerRef = useRef(null);
   const estimatorRef = useRef(null);
-  const inferenceCanvasRef = useRef(null);
   const latestLandmarksRef = useRef(null);
-  const inferenceBusyRef = useRef(false);
   const lastInferenceAtRef = useRef(0);
   const wordRef = useRef("");
   const indexRef = useRef(0);
@@ -109,15 +105,22 @@ export default function Home() {
     let cancelled = false;
 
     async function init() {
-      await tf.setBackend("cpu");
-      await tf.ready();
-      const net = await handpose.load();
+      const { FilesetResolver, HandLandmarker } = await import("@mediapipe/tasks-vision");
+      const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_URL);
+      const handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: HAND_LANDMARKER_URL },
+        runningMode: "VIDEO",
+        numHands: 1,
+        minHandDetectionConfidence: 0.5,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
       if (cancelled) return;
 
       const gestures = [Gestures.ThumbsUpGesture, aSign, bSign, cSign, dSign, eSign, fSign, gSign, iSign, lSign, oSign, uSign, vSign, wSign, ySign];
       const estimator = new GestureEstimator(gestures);
 
-      netRef.current = net;
+      handLandmarkerRef.current = handLandmarker;
       estimatorRef.current = estimator;
       setLoading(false);
     }
@@ -134,11 +137,11 @@ export default function Home() {
   useEffect(() => {
     let cancelled = false;
 
-    function processPrediction(hands) {
-      if (!gameRunning || !estimatorRef.current || !hands.length) return;
+    function processPrediction(landmarks) {
+      if (!gameRunning || !estimatorRef.current) return;
 
       const now = performance.now();
-      estimatorRef.current.estimate(hands[0].landmarks, 7).then((estimate) => {
+      estimatorRef.current.estimate(landmarks, 7).then((estimate) => {
         const matches = estimate.gestures || [];
         matches.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
         const label = matches[0]?.name || "-";
@@ -182,35 +185,35 @@ export default function Home() {
     }
 
     function runDetection(videoElement) {
-      if (inferenceBusyRef.current || !netRef.current) return;
-      inferenceBusyRef.current = true;
+      if (!handLandmarkerRef.current) return;
+      try {
+        const now = performance.now();
+        const result = handLandmarkerRef.current.detectForVideo(videoElement, now);
+        const normalizedHand = result.landmarks?.[0];
+        if (!normalizedHand) {
+          latestLandmarksRef.current = null;
+          if (gameRunning) setDetected("No hand");
+          return;
+        }
 
-      const inferenceCanvas = inferenceCanvasRef.current || document.createElement("canvas");
-      inferenceCanvasRef.current = inferenceCanvas;
-      if (inferenceCanvas.width !== DETECTION_WIDTH || inferenceCanvas.height !== DETECTION_HEIGHT) {
-        inferenceCanvas.width = DETECTION_WIDTH;
-        inferenceCanvas.height = DETECTION_HEIGHT;
-      }
-      const inferenceContext = inferenceCanvas.getContext("2d", { willReadFrequently: true });
-      inferenceContext.drawImage(videoElement, 0, 0, DETECTION_WIDTH, DETECTION_HEIGHT);
-
-      netRef.current.estimateHands(inferenceCanvas).then((hands) => {
-        latestLandmarksRef.current = hands[0]?.landmarks || null;
-        if (hands.length) processPrediction(hands);
-        else if (gameRunning) setDetected("No hand");
-      }).catch((error) => {
+        const landmarks = normalizedHand.map(({ x, y, z }) => [
+          x * videoElement.videoWidth,
+          y * videoElement.videoHeight,
+          z * videoElement.videoWidth,
+        ]);
+        latestLandmarksRef.current = landmarks;
+        processPrediction(landmarks);
+      } catch (error) {
         console.error("Hand detection failed:", error);
         if (gameRunning) setDetected("Tracking unavailable");
-      }).finally(() => {
-        inferenceBusyRef.current = false;
-      });
+      }
     }
 
     function drawFrame() {
       if (cancelled) return;
       const videoElement = webcamRef.current?.video;
       const canvas = canvasRef.current;
-      if (!videoElement || !canvas || !netRef.current) {
+      if (!videoElement || !canvas || !handLandmarkerRef.current) {
         rafRef.current = requestAnimationFrame(drawFrame);
         return;
       }
@@ -220,7 +223,7 @@ export default function Home() {
         return;
       }
 
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      const ctx = canvas.getContext("2d");
       if (canvas.width !== videoElement.videoWidth || canvas.height !== videoElement.videoHeight) {
         canvas.width = videoElement.videoWidth;
         canvas.height = videoElement.videoHeight;
@@ -229,10 +232,7 @@ export default function Home() {
       ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
       const landmarks = latestLandmarksRef.current;
       if (landmarks) {
-        ctx.save();
-        ctx.scale(canvas.width / DETECTION_WIDTH, canvas.height / DETECTION_HEIGHT);
         drawHand(landmarks, ctx);
-        ctx.restore();
       }
 
       const box = Math.min(canvas.width, canvas.height) * 0.55;
@@ -241,7 +241,7 @@ export default function Home() {
       ctx.strokeRect((canvas.width - box) / 2, (canvas.height - box) / 2, box, box);
 
       const now = performance.now();
-      if (now - lastInferenceAtRef.current >= DETECTION_INTERVAL_MS && !inferenceBusyRef.current) {
+      if (now - lastInferenceAtRef.current >= DETECTION_INTERVAL_MS) {
         lastInferenceAtRef.current = now;
         runDetection(videoElement);
       }
