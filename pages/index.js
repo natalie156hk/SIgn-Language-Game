@@ -39,6 +39,8 @@ export default function Home() {
   const estimatorRef = useRef(null);
   const latestLandmarksRef = useRef(null);
   const lastInferenceAtRef = useRef(0);
+  const lastVideoTimeRef = useRef(-1);
+  const lastVideoTimestampRef = useRef(0);
   const wordRef = useRef("");
   const indexRef = useRef(0);
   const lastLabelRef = useRef(null);
@@ -186,8 +188,12 @@ export default function Home() {
 
     function runDetection(videoElement) {
       if (!handLandmarkerRef.current) return;
+      if (videoElement.currentTime <= lastVideoTimeRef.current) return;
+
+      lastVideoTimeRef.current = videoElement.currentTime;
       try {
-        const now = performance.now();
+        const now = Math.max(performance.now(), lastVideoTimestampRef.current + 1);
+        lastVideoTimestampRef.current = now;
         const result = handLandmarkerRef.current.detectForVideo(videoElement, now);
         const normalizedHand = result.landmarks?.[0];
         if (!normalizedHand) {
@@ -205,7 +211,7 @@ export default function Home() {
         processPrediction(landmarks);
       } catch (error) {
         console.error("Hand detection failed:", error);
-        if (gameRunning) setDetected("Tracking unavailable");
+        if (gameRunning) setDetected("Retrying tracker");
       }
     }
 
