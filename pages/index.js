@@ -18,6 +18,9 @@ const GAME_SECONDS = 90;
 const CONF_THRESHOLD = 6.5;
 const STABLE_MS = 600;
 const COOLDOWN_MS = 500;
+const DETECTION_INTERVAL_MS = 250;
+const DETECTION_WIDTH = 320;
+const DETECTION_HEIGHT = 240;
 
 export default function Home() {
   const webcamRef = useRef(null);
@@ -36,6 +39,10 @@ export default function Home() {
 
   const netRef = useRef(null);
   const estimatorRef = useRef(null);
+  const inferenceCanvasRef = useRef(null);
+  const latestLandmarksRef = useRef(null);
+  const inferenceBusyRef = useRef(false);
+  const lastInferenceAtRef = useRef(0);
   const wordRef = useRef("");
   const indexRef = useRef(0);
   const lastLabelRef = useRef(null);
@@ -125,16 +132,91 @@ export default function Home() {
 
   // Detection loop
   useEffect(() => {
-    async function detect() {
+    let cancelled = false;
+
+    function processPrediction(hands) {
+      if (!gameRunning || !estimatorRef.current || !hands.length) return;
+
+      const now = performance.now();
+      estimatorRef.current.estimate(hands[0].landmarks, 7).then((estimate) => {
+        const matches = estimate.gestures || [];
+        matches.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+        const label = matches[0]?.name || "-";
+        const conf = matches[0]?.confidence || 0;
+        setDetected(`${label} (${conf.toFixed(1)})`);
+
+        const expected = wordRef.current[indexRef.current];
+        if (label === expected && conf >= CONF_THRESHOLD) {
+          if (label !== lastLabelRef.current) {
+            lastLabelRef.current = label;
+            stableStartRef.current = now;
+          } else if (now - stableStartRef.current >= STABLE_MS && now >= cooldownRef.current) {
+            const newScore = scoreRef.current + 10;
+            scoreRef.current = newScore;
+            setScore(newScore);
+            setLettersDone((d) => d + 1);
+            showBanner("🎉 Great job!");
+            indexRef.current += 1;
+            setLetterIndex(indexRef.current);
+            cooldownRef.current = now + COOLDOWN_MS;
+            lastLabelRef.current = null;
+            stableStartRef.current = 0;
+
+            if (indexRef.current >= wordRef.current.length) {
+              showBanner(`🌟 Word "${wordRef.current}" complete!`);
+              const bonus = scoreRef.current + 20;
+              scoreRef.current = bonus;
+              setScore(bonus);
+              setTimeout(() => pickWord(), 800);
+            } else {
+              setTargetLetter(wordRef.current[indexRef.current]);
+            }
+          }
+        } else {
+          lastLabelRef.current = null;
+          stableStartRef.current = 0;
+        }
+      }).catch((error) => {
+        console.error("Gesture estimation failed:", error);
+      });
+    }
+
+    function runDetection(videoElement) {
+      if (inferenceBusyRef.current || !netRef.current) return;
+      inferenceBusyRef.current = true;
+
+      const inferenceCanvas = inferenceCanvasRef.current || document.createElement("canvas");
+      inferenceCanvasRef.current = inferenceCanvas;
+      if (inferenceCanvas.width !== DETECTION_WIDTH || inferenceCanvas.height !== DETECTION_HEIGHT) {
+        inferenceCanvas.width = DETECTION_WIDTH;
+        inferenceCanvas.height = DETECTION_HEIGHT;
+      }
+      const inferenceContext = inferenceCanvas.getContext("2d", { willReadFrequently: true });
+      inferenceContext.drawImage(videoElement, 0, 0, DETECTION_WIDTH, DETECTION_HEIGHT);
+
+      netRef.current.estimateHands(inferenceCanvas).then((hands) => {
+        latestLandmarksRef.current = hands[0]?.landmarks || null;
+        if (hands.length) processPrediction(hands);
+        else if (gameRunning) setDetected("No hand");
+      }).catch((error) => {
+        console.error("Hand detection failed:", error);
+        if (gameRunning) setDetected("Tracking unavailable");
+      }).finally(() => {
+        inferenceBusyRef.current = false;
+      });
+    }
+
+    function drawFrame() {
+      if (cancelled) return;
       const videoElement = webcamRef.current?.video;
       const canvas = canvasRef.current;
       if (!videoElement || !canvas || !netRef.current) {
-        rafRef.current = requestAnimationFrame(detect);
+        rafRef.current = requestAnimationFrame(drawFrame);
         return;
       }
 
       if (videoElement.readyState < 2 || !videoElement.videoWidth || !videoElement.videoHeight) {
-        rafRef.current = requestAnimationFrame(detect);
+        rafRef.current = requestAnimationFrame(drawFrame);
         return;
       }
 
@@ -144,71 +226,33 @@ export default function Home() {
         canvas.height = videoElement.videoHeight;
       }
 
-      // Draw camera onto single canvas
       ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-
-      const hands = await netRef.current.estimateHands(canvas);
-      if (hands.length > 0) {
-        drawHand(hands[0].landmarks, ctx);
-
-        if (gameRunning && estimatorRef.current) {
-          const now = performance.now();
-          const estimate = await estimatorRef.current.estimate(hands[0].landmarks, 7);
-          const matches = estimate.gestures;
-          let label = "-";
-          let conf = 0;
-          if (matches && matches.length > 0) {
-            matches.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
-            label = matches[0].name || "-";
-            conf = matches[0].confidence || 0;
-          }
-          setDetected(`${label} (${conf.toFixed(1)})`);
-
-          const expected = wordRef.current[indexRef.current];
-          if (label === expected && conf >= CONF_THRESHOLD) {
-            if (label !== lastLabelRef.current) {
-              lastLabelRef.current = label;
-              stableStartRef.current = now;
-            } else if (now - stableStartRef.current >= STABLE_MS && now >= cooldownRef.current) {
-              const newScore = scoreRef.current + 10;
-              scoreRef.current = newScore;
-              setScore(newScore);
-              setLettersDone((d) => d + 1);
-              showBanner("🎉 Great job!");
-              indexRef.current += 1;
-              setLetterIndex(indexRef.current);
-              cooldownRef.current = now + COOLDOWN_MS;
-              lastLabelRef.current = null;
-              stableStartRef.current = 0;
-
-              if (indexRef.current >= wordRef.current.length) {
-                showBanner(`🌟 Word "${wordRef.current}" complete!`);
-                const bonus = scoreRef.current + 20;
-                scoreRef.current = bonus;
-                setScore(bonus);
-                setTimeout(() => pickWord(), 800);
-              } else {
-                setTargetLetter(wordRef.current[indexRef.current]);
-              }
-            }
-          } else {
-            lastLabelRef.current = null;
-            stableStartRef.current = 0;
-          }
-        }
+      const landmarks = latestLandmarksRef.current;
+      if (landmarks) {
+        ctx.save();
+        ctx.scale(canvas.width / DETECTION_WIDTH, canvas.height / DETECTION_HEIGHT);
+        drawHand(landmarks, ctx);
+        ctx.restore();
       }
 
-      // Draw light green guide box in center
       const box = Math.min(canvas.width, canvas.height) * 0.55;
       ctx.strokeStyle = "rgba(144,238,144,0.9)";
       ctx.lineWidth = 4;
       ctx.strokeRect((canvas.width - box) / 2, (canvas.height - box) / 2, box, box);
 
-      rafRef.current = requestAnimationFrame(detect);
+      const now = performance.now();
+      if (now - lastInferenceAtRef.current >= DETECTION_INTERVAL_MS && !inferenceBusyRef.current) {
+        lastInferenceAtRef.current = now;
+        runDetection(videoElement);
+      }
+      rafRef.current = requestAnimationFrame(drawFrame);
     }
 
-    rafRef.current = requestAnimationFrame(detect);
-    return () => cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(drawFrame);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafRef.current);
+    };
   }, [gameRunning, pickWord, showBanner]);
 
   function drawHand(landmarks, ctx) {
