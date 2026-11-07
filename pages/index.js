@@ -26,6 +26,8 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [gameRunning, setGameRunning] = useState(false);
   const [targetLetter, setTargetLetter] = useState("-");
+  const [currentWord, setCurrentWord] = useState("");
+  const [letterIndex, setLetterIndex] = useState(0);
   const [detected, setDetected] = useState("-");
   const [score, setScore] = useState(0);
   const [timeLeft, setTimeLeft] = useState(GAME_SECONDS);
@@ -51,6 +53,8 @@ export default function Home() {
   const pickWord = useCallback(() => {
     wordRef.current = WORDS[Math.floor(Math.random() * WORDS.length)];
     indexRef.current = 0;
+    setCurrentWord(wordRef.current);
+    setLetterIndex(0);
     setTargetLetter(wordRef.current[0]);
   }, []);
 
@@ -88,6 +92,8 @@ export default function Home() {
     setTimeLeft(GAME_SECONDS);
     setLettersDone(0);
     setTargetLetter("-");
+    setCurrentWord("");
+    setLetterIndex(0);
     setDetected("-");
   }, []);
 
@@ -132,7 +138,7 @@ export default function Home() {
         return;
       }
 
-      const ctx = canvas.getContext("2d");
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
       if (canvas.width !== videoElement.videoWidth || canvas.height !== videoElement.videoHeight) {
         canvas.width = videoElement.videoWidth;
         canvas.height = videoElement.videoHeight;
@@ -170,6 +176,7 @@ export default function Home() {
               setLettersDone((d) => d + 1);
               showBanner("🎉 Great job!");
               indexRef.current += 1;
+              setLetterIndex(indexRef.current);
               cooldownRef.current = now + COOLDOWN_MS;
               lastLabelRef.current = null;
               stableStartRef.current = 0;
@@ -231,52 +238,77 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-cyan-100 to-orange-100 text-gray-800 flex flex-col items-center">
-      <header className="w-full text-center p-4 bg-white/60 backdrop-blur">
-        <h1 className="text-2xl font-extrabold text-teal-700">ASL Letter Challenge</h1>
-        <p className="text-sm text-gray-600 mt-1">Copy the letter with your hand!</p>
-        <div className="flex gap-3 justify-center mt-3 flex-wrap">
-          <span className="bg-white rounded-full px-4 py-1 font-bold shadow">Score: {score}</span>
-          <span className="bg-white rounded-full px-4 py-1 font-bold shadow">Time: {timeLeft}s</span>
-          <span className="bg-white rounded-full px-4 py-1 font-bold shadow">Letters: {lettersDone}</span>
+    <div className="game-shell">
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-mark" aria-hidden="true">ASL</div>
+          <div className="brand-copy">
+            <h1>ASL Letter Challenge</h1>
+            <p>Copy the handshape shown, one letter at a time</p>
+          </div>
+        </div>
+        <div className="scoreboard" aria-label="Game statistics">
+          <div className="stat"><span className="stat-label">Score</span><span className="stat-value">{score}</span></div>
+          <div className="stat"><span className="stat-label">Time</span><span className="stat-value">{timeLeft}s</span></div>
+          <div className="stat"><span className="stat-label">Letters</span><span className="stat-value">{lettersDone}</span></div>
         </div>
       </header>
 
-      <main className="relative w-[640px] max-w-[96vw] aspect-[4/3] rounded-2xl overflow-hidden shadow-xl bg-black my-3">
-        <Webcam ref={webcamRef} className="hidden" mirrored={false} audio={false} videoConstraints={{ width: 640, height: 480 }} />
-        <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
-
-        <div className="absolute top-3 right-3 bg-white/95 rounded-2xl p-4 text-center shadow-lg min-w-[110px]">
-          <div className="text-xs text-gray-500">Show this letter</div>
-          <div className="text-6xl font-black text-teal-700 leading-none">{targetLetter}</div>
-          {targetLetter !== "-" && (
-            <img src={`/handimage/${targetLetter}hand.svg`} alt={targetLetter} className="h-16 mx-auto mt-1" />
-          )}
-        </div>
-
-        {banner && (
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-teal-600 text-white px-7 py-3 rounded-full text-xl font-extrabold shadow-xl pointer-events-none">
-            {banner}
+      <main className="game-layout">
+        <section className="play-column" aria-label="ASL signing game">
+          <div className="word-panel">
+            <div>
+              <span className="word-label">Spell this word</span>
+              <div className="word-letters" aria-label={currentWord || "No word selected"}>
+                {(currentWord || "---").split("").map((letter, index) => (
+                  <span
+                    className={`word-letter${currentWord && index < letterIndex ? " complete" : ""}${currentWord && index === letterIndex ? " current" : ""}`}
+                    key={`${letter}-${index}`}
+                  >{letter}</span>
+                ))}
+              </div>
+            </div>
+            <div className="detected-note">{gameRunning ? "Show the matching handshape" : "Press Start when you're ready"}</div>
           </div>
-        )}
 
-        {loading && (
-          <div className="absolute inset-0 bg-white/95 flex items-center justify-center text-teal-700 text-lg font-bold z-50">
-            Loading hand magic... please wait 🙌
+          <div className="camera-stage">
+            <Webcam
+              ref={webcamRef}
+              className="camera-video-source"
+              style={{ display: "none" }}
+              mirrored={false}
+              audio={false}
+              videoConstraints={{ width: 640, height: 480 }}
+            />
+            <canvas ref={canvasRef} className="camera-canvas" aria-label="Live camera with hand tracking" />
+            <div className="camera-label">CAMERA</div>
+            <div className="target-card">
+              <div className="target-label">Sign this letter</div>
+              <div className="target-letter">{targetLetter}</div>
+              {targetLetter !== "-" && (
+                <img className="target-image" src={`/handimage/${targetLetter}hand.svg`} alt={`ASL handshape for ${targetLetter}`} />
+              )}
+            </div>
+
+            {banner && <div className="feedback-banner" role="status">{banner}</div>}
+            {loading && <div className="camera-loading" role="status">Loading hand detector…</div>}
           </div>
-        )}
+        </section>
+
+        <aside className="side-panel">
+          <section className="side-section">
+            <h2 className="side-title">Live prediction</h2>
+            <div className="detected-value">{detected}</div>
+            <div className="detected-note">Keep your full hand in the light-green guide.</div>
+          </section>
+          <div className="control-row">
+            <button onClick={startGame} disabled={loading} className="control-button">
+              {gameRunning ? "Restart game" : "Start game"}
+            </button>
+            <button onClick={resetGame} className="control-button secondary">Reset</button>
+          </div>
+        </aside>
       </main>
-
-      <div className="text-lg font-bold text-gray-700">Detected: {detected}</div>
-
-      <div className="flex gap-3 mt-3 mb-6">
-        <button onClick={startGame} disabled={loading} className="bg-teal-600 text-white font-bold py-2 px-6 rounded-lg shadow hover:bg-teal-700 disabled:opacity-50">
-          Start Game
-        </button>
-        <button onClick={resetGame} className="bg-orange-500 text-white font-bold py-2 px-6 rounded-lg shadow hover:bg-orange-600">
-          Reset
-        </button>
-      </div>
     </div>
   );
 }
