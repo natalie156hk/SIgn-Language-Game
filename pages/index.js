@@ -96,7 +96,7 @@ export default function Home() {
     let cancelled = false;
 
     async function init() {
-      await tf.setBackend("webgl");
+      await tf.setBackend("cpu");
       await tf.ready();
       const net = await handpose.load();
       if (cancelled) return;
