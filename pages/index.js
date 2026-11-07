@@ -229,7 +229,7 @@ export default function Home() {
       </header>
 
       <main className="relative w-[640px] max-w-[96vw] aspect-[4/3] rounded-2xl overflow-hidden shadow-xl bg-black my-3">
-        <Webcam ref={webcamRef} className="absolute inset-0 w-full h-full" mirrored={true} audio={false} />
+        <Webcam ref={webcamRef} className="absolute inset-0 w-full h-full" mirrored={false} audio={false} />
         <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
 
         <div className="absolute top-3 right-3 bg-white/95 rounded-2xl p-4 text-center shadow-lg min-w-[110px]">
